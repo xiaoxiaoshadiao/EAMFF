@@ -37,14 +37,17 @@ class FAMM(nn.Module):
         # 5. 预测头（截取最后predict_step个时间步作为输出）
         self.predict_head = nn.Linear(in_features, in_features)  # 线性投影（保持维度）
 
-    def forward(self, x):
+    def forward(self, x, return_intermediate=False):
         """
         前向传播：完整FAMM模型流程
         :param x: 输入序列 (batch, window_len, in_features)
-        :return: pred_out (batch, predict_step, in_features) → 最终预测结果
+        :param return_intermediate: 是否返回中间变量（xs/xbg），默认False（兼容原有逻辑）
+        :return:
+            - 默认: pred_out (batch, predict_step, in_features) → 最终预测结果
+            - return_intermediate=True: (pred_out, xs, xbg) → 预测结果+中间分解值
         """
         # 1. 多尺度分解：X → Xs（局部） + Xbg（背景）
-        xs, xbg = self.msd(x)
+        xs, xbg = self.msd(x)  # 这正是我们需要的局部/背景分量
 
         # 2. ICB处理局部项：Xs → Ys
         ys = self.icb(xs)
@@ -59,7 +62,11 @@ class FAMM(nn.Module):
         pred_out = fusion_out[:, -self.predict_step:, :]  # (batch, predict_step, in_features)
         pred_out = self.predict_head(pred_out)
 
-        return pred_out
+        # 新增：可选返回中间变量（xs/xbg），不破坏原有逻辑
+        if return_intermediate:
+            return pred_out, xs, xbg  # xs/xbg形状: (batch, window_len, in_features)
+        else:
+            return pred_out
 
 
 # ==================== Debug测试 ====================
@@ -78,11 +85,19 @@ if __name__ == "__main__":
     famm_model = FAMM(in_features=in_features, d_model=64, predict_step=predict_step)
     famm_model.eval()  # 评估模式
 
-    # 3. 前向传播
+    # 3. 测试默认返回（仅预测结果）
     pred_out = famm_model(test_x)
-    print(f"模型输出形状 (batch, predict_step, features): {pred_out.shape}")
+    print(f"默认输出形状 (batch, predict_step, features): {pred_out.shape}")
 
-    # 验证输出维度
-    assert pred_out.shape == (batch_size, predict_step, in_features), "模型输出维度不符合预期"
+    # 4. 测试返回中间变量（xs/xbg）
+    pred_out, xs, xbg = famm_model(test_x, return_intermediate=True)
+    print(f"带中间变量 - 预测结果形状: {pred_out.shape}")
+    print(f"带中间变量 - xs（局部）形状: {xs.shape}")
+    print(f"带中间变量 - xbg（背景）形状: {xbg.shape}")
+
+    # 验证维度
+    assert pred_out.shape == (batch_size, predict_step, in_features), "预测结果维度错误"
+    assert xs.shape == (batch_size, window_len, in_features), "xs维度错误"
+    assert xbg.shape == (batch_size, window_len, in_features), "xbg维度错误"
 
     print("\n=== famm_core.py测试完成，FAMM模型核心功能正常 ===")
